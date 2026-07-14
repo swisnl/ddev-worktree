@@ -11,6 +11,10 @@
 #
 #   ddev worktree-remove feat/login          # normal remove
 #   ddev worktree-remove feat/login --force  # force-remove, discarding tracked edits too
+#   ddev worktree-remove --here              # tear down only the DDEV project for
+#                                            # the current worktree, leaving the git
+#                                            # worktree for an external manager
+#                                            # (e.g. worktrunk) to remove
 #
 # Provisioning leaves untracked files in the worktree (the copied .env,
 # .ddev/config.local.yaml, installed deps), which would make a plain
@@ -26,15 +30,30 @@
 set -euo pipefail
 
 # Anchor to the project root; git commands below then run against this repo.
+# In --here mode DDEV_APPROOT is unset (we're invoked from a worktree manager's
+# hook), so this resolves to the current worktree — which is what we want.
 cd "${DDEV_APPROOT:-$PWD}"
 
-if [[ $# -lt 1 ]]; then
+# Split --here (tear down only the DDEV project, leave the git worktree for the
+# external manager) from the branch arg + any pass-through git worktree flags.
+HERE=""
+ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --here) HERE=1; shift ;;
+    *) ARGS+=("$1"); shift ;;
+  esac
+done
+if [[ ${#ARGS[@]} -gt 0 ]]; then set -- "${ARGS[@]}"; else set --; fi
+
+if [[ $# -lt 1 && -z "$HERE" ]]; then
   echo "Usage: ddev worktree-remove <branch> [extra git worktree remove flags...]" >&2
+  echo "       ddev worktree-remove --here   # remove only the DDEV project for the current worktree" >&2
   exit 1
 fi
 
-BRANCH="$1"
-shift
+BRANCH="${1:-}"
+[[ $# -gt 0 ]] && shift
 
 sanitize() {
   printf '%s' "$1" \
@@ -42,11 +61,18 @@ sanitize() {
     | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g; s/^-//; s/-$//'
 }
 
+# In --here mode the current worktree is the target and its branch names it.
+[[ -n "$HERE" && -z "$BRANCH" ]] && BRANCH=$(git rev-parse --abbrev-ref HEAD)
+
 SANITIZED=$(sanitize "$BRANCH")
 MAIN_ROOT=$(git worktree list --porcelain | sed -n 's/^worktree //p' | head -n 1)
-# Sanitized to match the convention worktree-provision documents:
-#   git worktree add .worktrees/<sanitized-branch> <branch>
-WORKTREE_PATH="$MAIN_ROOT/.worktrees/$SANITIZED"
+if [[ -n "$HERE" ]]; then
+  WORKTREE_PATH="$PWD"
+else
+  # Sanitized to match the convention worktree-provision documents:
+  #   git worktree add .worktrees/<sanitized-branch> <branch>
+  WORKTREE_PATH="$MAIN_ROOT/.worktrees/$SANITIZED"
+fi
 
 # Resolve the DDEV project name without hardcoding a prefix. Prefer the name
 # worktree-provision wrote into the worktree's own config.local.yaml; else
@@ -81,7 +107,11 @@ else
 fi
 
 # Step 2: remove the worktree (or prune stale registration if it's already gone).
-if [[ ! -d "$WORKTREE_PATH" ]]; then
+# In --here mode we stop here: the external manager (worktrunk) owns the git
+# worktree and will remove it after this hook returns.
+if [[ -n "$HERE" ]]; then
+  echo "[worktree-remove] --here: leaving the git worktree for the external manager to remove"
+elif [[ ! -d "$WORKTREE_PATH" ]]; then
   echo "[worktree-remove] $WORKTREE_PATH not on disk; pruning stale registrations"
   git worktree prune
 elif [[ $# -gt 0 ]]; then

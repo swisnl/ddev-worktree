@@ -79,6 +79,39 @@ ENV_HOST_VARS=(APP_DOMAIN COOKIE_DOMAIN)
 ENV_URL_VARS=(APP_URL VITE_APP_URL)
 ```
 
+## Using with worktrunk (or another worktree manager)
+
+If you drive worktrees with [worktrunk](https://worktrunk.dev) (`wt`), let it own
+worktree creation/removal and use this add-on only to provision the DDEV
+environment, via the `--here` flag:
+
+- `ddev worktree-provision --here [--from <path>]` — provision the worktree
+  you're **already in** instead of creating one. Seeds from `--from`, else from
+  the primary worktree.
+- `ddev worktree-remove --here` — tear down just the DDEV project for the
+  current worktree, leaving the git worktree for `wt` to remove.
+
+Wire them into `.config/wt.toml` in the repo root:
+
+```toml
+[post-start]
+ddev = "ddev worktree-provision --here --from {{ primary_worktree_path }}"
+
+[pre-remove]
+ddev = "ddev worktree-remove --here"
+```
+
+Notes for this setup:
+
+- **Commit the add-on's command files** (`.ddev/commands/host/worktree-*`). A new
+  git worktree only contains *tracked* files, so if they're untracked `wt`'s
+  worktree won't have them and the hook can't find `ddev worktree-provision`.
+  (Alternatively, point the hook at the script by absolute path.)
+- **The primary worktree's DDEV project must be running** when `post-start`
+  fires — that's where the database and `.env` are copied from.
+- worktrunk asks you to approve hook commands the first time
+  (`wt config approvals add`, or `wt switch --yes`).
+
 ## Notes
 
 - Add `.worktrees/` and `.ddev/config.local.yaml` to the project's `.gitignore`.
