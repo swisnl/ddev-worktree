@@ -6,11 +6,31 @@ ddev_version_constraint: ">= 1.24.0"
 
 # Host custom commands copied into <project>/.ddev/commands/host/. They carry a
 # #ddev-generated marker, so `ddev add-on get` updates them and
-# `ddev add-on remove` deletes them cleanly. A project-level .ddev/worktree.conf
-# (if you add one) is NOT managed here and is left untouched.
+# `ddev add-on remove` deletes them cleanly. The per-project .ddev/worktree.conf
+# seeded below is NOT managed here and is left untouched.
 project_files:
   - commands/host/worktree-provision
   - commands/host/worktree-remove
 
 post_install_actions:
-  - 'echo "ddev-worktree installed. Create + provision a worktree with: ddev worktree-provision <branch> [--from <ref|path>]"'
+  # Seed a per-project config with the defaults, but only if it does not exist
+  # yet. It is intentionally NOT #ddev-generated, so your edits survive both
+  # `ddev add-on get` updates and `ddev add-on remove`. Uses an absolute path
+  # because post-install actions don't run from the project root.
+  - |
+    CONF="${DDEV_APPROOT}/.ddev/worktree.conf"
+    if [ ! -f "$CONF" ]; then
+      printf '%s\n' \
+        '# ddev-worktree — per-project config, sourced as bash by worktree-provision.' \
+        '# Not managed by the add-on: edit freely; updates and removal leave it alone.' \
+        '# Commit it if you customize it, so the whole team shares the setting.' \
+        '#' \
+        '# Which .env keys get repointed at the new worktree hostname:' \
+        'ENV_HOST_VARS=(APP_DOMAIN SESSION_DOMAIN SANCTUM_STATEFUL_DOMAINS)  # -> <host>' \
+        'ENV_URL_VARS=(APP_URL)                                             # -> https://<host>' \
+        > "$CONF"
+      echo "ddev-worktree: wrote default .ddev/worktree.conf"
+    else
+      echo "ddev-worktree: kept existing .ddev/worktree.conf"
+    fi
+  - 'echo "ddev-worktree installed. Provision a worktree with: ddev worktree-provision <branch> [--from <ref|path>]"'
