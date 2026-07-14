@@ -11,7 +11,7 @@
 #
 #   --from <ref>   branch the new worktree off this git ref (default: HEAD)
 #   --from <path>  a checkout to branch off AND copy data from
-#   --here         provision the worktree you're ALREADY in, instead of creating
+#   --in-place     provision the worktree you're ALREADY in, instead of creating
 #                  one — for external worktree managers (e.g. worktrunk) that own
 #                  worktree creation and call this from a post-start hook. Seeds
 #                  from --from if given, else from the primary worktree.
@@ -22,7 +22,7 @@
 # Examples:
 #   ddev worktree-provision my-feature              # new branch off HEAD, seed from here
 #   ddev worktree-provision hotfix --from develop   # new branch off develop, seed from here
-#   ddev worktree-provision --here --from /path/to/primary   # from a worktrunk hook
+#   ddev worktree-provision --in-place --from /path/to/primary   # from a worktrunk hook
 #
 # Companion to `ddev worktree-remove` — that one tears down what this
 # one created.
@@ -46,7 +46,7 @@ cd "$INVOKE_ROOT"
 ENV_HOST_VARS=(APP_DOMAIN SESSION_DOMAIN SANCTUM_STATEFUL_DOMAINS)  # set to <host>
 ENV_URL_VARS=(APP_URL)                                             # set to https://<host>
 [[ -f "$INVOKE_ROOT/.ddev/worktree.conf" ]] && source "$INVOKE_ROOT/.ddev/worktree.conf"
-# (In --here mode we re-source the source project's copy too, once it's known.)
+# (In --in-place mode we re-source the source project's copy too, once it's known.)
 # ---------------------------------------------------------------------------
 
 sanitize() {
@@ -57,25 +57,25 @@ sanitize() {
 
 usage() {
   echo "Usage: ddev worktree-provision <branch> [--from <ref|path>]"
-  echo "       ddev worktree-provision --here [--from <path>]"
+  echo "       ddev worktree-provision --in-place [--from <path>]"
   echo "Creates .worktrees/<branch> (branched off <ref>, default HEAD) and"
   echo "provisions it. The database + .env are copied from a running project"
   echo "(the --from path if given, else the project you run this in)."
-  echo "With --here, provisions the worktree you're already in (for external"
+  echo "With --in-place, provisions the worktree you're already in (for external"
   echo "worktree managers like worktrunk); seeds from --from, else the primary."
 }
 
 BRANCH=""
 FROM=""
-HERE=""
+IN_PLACE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --from)
       FROM="${2:-}"
       shift 2
       ;;
-    --here)
-      HERE=1
+    --in-place)
+      IN_PLACE=1
       shift
       ;;
     -h|--help)
@@ -100,7 +100,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$BRANCH" && -z "$HERE" ]]; then
+if [[ -z "$BRANCH" && -z "$IN_PLACE" ]]; then
   usage >&2
   exit 2
 fi
@@ -111,13 +111,13 @@ if ! command -v ddev >/dev/null 2>&1; then
 fi
 
 # The primary (main) worktree is always the first entry `git worktree list`
-# prints; it's the default data source in --here mode.
+# prints; it's the default data source in --in-place mode.
 PRIMARY_ROOT=$(git worktree list --porcelain | sed -n 's/^worktree //p' | head -n1)
 
 # Resolve the base ref for the new branch and the data source for .env + DB.
 #   --from <path>  -> a checkout to branch off AND copy data from
 #   --from <ref>   -> branch off this git ref; data from the invoking project
-#   --here         -> data from the primary worktree (unless --from overrides)
+#   --in-place         -> data from the primary worktree (unless --from overrides)
 #   (omitted)      -> branch off HEAD; data from the invoking project
 BASE_REF="HEAD"
 SOURCE_ROOT="$INVOKE_ROOT"
@@ -128,15 +128,15 @@ if [[ -n "$FROM" ]]; then
   else
     BASE_REF="$FROM"
   fi
-elif [[ -n "$HERE" ]]; then
+elif [[ -n "$IN_PLACE" ]]; then
   # The invoking worktree itself isn't a provisioned source; seed from primary.
   SOURCE_ROOT="$PRIMARY_ROOT"
 fi
 
-# In --here mode we provision the worktree we're already in: derive the branch
+# In --in-place mode we provision the worktree we're already in: derive the branch
 # from it if one wasn't named, and pick up the source project's per-project
 # config (the invoking worktree may not carry an uncommitted worktree.conf).
-if [[ -n "$HERE" ]]; then
+if [[ -n "$IN_PLACE" ]]; then
   [[ -z "$BRANCH" ]] && BRANCH=$(git rev-parse --abbrev-ref HEAD)
   [[ -f "$SOURCE_ROOT/.ddev/worktree.conf" ]] && source "$SOURCE_ROOT/.ddev/worktree.conf"
 fi
@@ -155,11 +155,11 @@ if [[ ! -f "$SOURCE_ROOT/.env" ]]; then
   exit 1
 fi
 
-# In --here mode the worktree already exists (the caller created it) and is our
+# In --in-place mode the worktree already exists (the caller created it) and is our
 # cwd. Otherwise create/reuse .worktrees/<sanitized-branch> under the main
 # checkout — the same convention worktree-remove tears down.
 SANITIZED=$(sanitize "$BRANCH")
-if [[ -n "$HERE" ]]; then
+if [[ -n "$IN_PLACE" ]]; then
   TARGET="$INVOKE_ROOT"
 else
   TARGET="$PRIMARY_ROOT/.worktrees/$SANITIZED"
@@ -170,7 +170,7 @@ if [[ "$SOURCE_ROOT" == "$TARGET" ]]; then
   exit 1
 fi
 
-if [[ -n "$HERE" ]]; then
+if [[ -n "$IN_PLACE" ]]; then
   echo "[worktree-provision] provisioning current worktree at $TARGET"
 elif [[ -e "$TARGET/.git" ]]; then
   echo "[worktree-provision] reusing existing worktree at $TARGET"
@@ -196,7 +196,7 @@ fi
 # TLD is a repo-wide setting (project_tld), so this repo's DDEV values already
 # carry it. Prefer DDEV_TLD; else split it off DDEV_HOSTNAME (<name>.<tld> — a
 # DDEV project name can't contain a dot); else ask the running source project
-# (authoritative, and works when --here runs without any DDEV_* env even if the
+# (authoritative, and works when --in-place runs without any DDEV_* env even if the
 # TLD lives in DDEV's global config); else the committed config; else default.
 TLD="${DDEV_TLD:-}"
 if [[ -z "$TLD" && -n "${DDEV_HOSTNAME:-}" ]]; then

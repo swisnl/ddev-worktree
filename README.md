@@ -83,22 +83,37 @@ ENV_URL_VARS=(APP_URL VITE_APP_URL)
 
 If you drive worktrees with [worktrunk](https://worktrunk.dev) (`wt`), let it own
 worktree creation/removal and use this add-on only to provision the DDEV
-environment, via the `--here` flag:
+environment, via the `--in-place` flag:
 
-- `ddev worktree-provision --here [--from <path>]` — provision the worktree
+- `ddev worktree-provision --in-place [--from <path>]` — provision the worktree
   you're **already in** instead of creating one. Seeds from `--from`, else from
   the primary worktree.
-- `ddev worktree-remove --here` — tear down just the DDEV project for the
+- `ddev worktree-remove --in-place` — tear down just the DDEV project for the
   current worktree, leaving the git worktree for `wt` to remove.
 
-Wire them into `.config/wt.toml` in the repo root:
+Set it up once:
+
+```bash
+# 1. install worktrunk (see https://worktrunk.dev for other platforms)
+brew install worktrunk
+
+# 2. install this add-on in the repo and commit its command files so worktrunk's
+#    worktrees (which only carry tracked files) can find them
+ddev add-on get swisnl/ddev-worktree
+git add .ddev/commands/host/worktree-* && git commit -m "add ddev-worktree commands"
+
+# 3. optional: shell integration so `wt switch` also cd's you into the worktree
+wt config shell install
+```
+
+Then wire the hooks into `.config/wt.toml` in the repo root:
 
 ```toml
 [post-start]
-ddev = "ddev worktree-provision --here --from {{ primary_worktree_path }}"
+ddev = "ddev worktree-provision --in-place --from {{ primary_worktree_path }}"
 
 [pre-remove]
-ddev = "ddev worktree-remove --here"
+ddev = "ddev worktree-remove --in-place"
 ```
 
 Notes for this setup:
