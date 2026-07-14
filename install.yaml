@@ -1,0 +1,16 @@
+name: worktree
+
+# Minimum DDEV that provides the DDEV_* env vars and flags these commands use
+# (--skip-hooks on start, -j describe, DDEV_SITENAME/DDEV_TLD/DDEV_HOSTNAME).
+ddev_version_constraint: ">= 1.24.0"
+
+# Host custom commands copied into <project>/.ddev/commands/host/. They carry a
+# #ddev-generated marker, so `ddev add-on get` updates them and
+# `ddev add-on remove` deletes them cleanly. A project-level .ddev/worktree.conf
+# (if you add one) is NOT managed here and is left untouched.
+project_files:
+  - commands/host/worktree-provision
+  - commands/host/worktree-remove
+
+post_install_actions:
+  - 'echo "ddev-worktree installed. Create + provision a worktree with:  ddev worktree-provision <branch> [--from <ref|path>]"'

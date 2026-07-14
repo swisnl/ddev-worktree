@@ -1,0 +1,313 @@
+#!/usr/bin/env bash
+
+## Description: Create a git worktree and provision it as an isolated DDEV project (deps installed, DB copied)
+## Usage: worktree-provision <branch> [--from <branch|path>]
+## Example: "ddev worktree-provision my-feature"
+## OSTypes: darwin,linux
+#ddev-generated
+
+# Create (if needed) the worktree .worktrees/<branch> and provision it as its
+# own DDEV project. Run it from the main checkout (or any worktree).
+#
+#   --from <ref>   branch the new worktree off this git ref (default: HEAD)
+#   --from <path>  a checkout to branch off AND copy data from
+#
+# The database + .env are always copied from a *running* DDEV project: the
+# --from path if one is given, otherwise the project you invoked this in.
+#
+# Examples:
+#   ddev worktree-provision my-feature              # new branch off HEAD, seed from here
+#   ddev worktree-provision hotfix --from develop   # new branch off develop, seed from here
+#
+# Companion to `ddev worktree-remove` — that one tears down what this
+# one created.
+
+set -euo pipefail
+
+# Where we were invoked (the default source project). DDEV sets DDEV_APPROOT to
+# the project root and exports DDEV_* env vars (DDEV_HOSTNAME, DDEV_TLD, …).
+INVOKE_ROOT="${DDEV_APPROOT:-$PWD}"
+cd "$INVOKE_ROOT"
+
+# --- Config ----------------------------------------------------------------
+# Which .env keys carry this site's host, so the worktree can be repointed at
+# its own DDEV hostname. The defaults suit SWIS Laravel/Drupal projects; keys
+# absent from a given .env are simply skipped.
+#
+# Override per project WITHOUT editing this ddev-generated file: create
+# .ddev/worktree.conf and set the arrays there, e.g.
+#     ENV_HOST_VARS=(APP_DOMAIN COOKIE_DOMAIN)
+#     ENV_URL_VARS=(APP_URL VITE_APP_URL)
+ENV_HOST_VARS=(APP_DOMAIN SESSION_DOMAIN SANCTUM_STATEFUL_DOMAINS)  # set to <host>
+ENV_URL_VARS=(APP_URL)                                             # set to https://<host>
+[[ -f "$INVOKE_ROOT/.ddev/worktree.conf" ]] && source "$INVOKE_ROOT/.ddev/worktree.conf"
+# ---------------------------------------------------------------------------
+
+sanitize() {
+  printf '%s' "$1" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g; s/^-//; s/-$//'
+}
+
+usage() {
+  echo "Usage: ddev worktree-provision <branch> [--from <ref|path>]"
+  echo "Creates .worktrees/<branch> (branched off <ref>, default HEAD) and"
+  echo "provisions it. The database + .env are copied from a running project"
+  echo "(the --from path if given, else the project you run this in)."
+}
+
+BRANCH=""
+FROM=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --from)
+      FROM="${2:-}"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    -*)
+      echo "[worktree-provision] unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+    *)
+      if [[ -z "$BRANCH" ]]; then
+        BRANCH="$1"
+        shift
+      else
+        echo "[worktree-provision] unexpected argument: $1" >&2
+        usage >&2
+        exit 2
+      fi
+      ;;
+  esac
+done
+
+if [[ -z "$BRANCH" ]]; then
+  usage >&2
+  exit 2
+fi
+
+if ! command -v ddev >/dev/null 2>&1; then
+  echo "[worktree-provision] ddev not on PATH" >&2
+  exit 1
+fi
+
+# Resolve the base ref for the new branch and the data source for .env + DB.
+#   --from <path>  -> a checkout to branch off AND copy data from
+#   --from <ref>   -> branch off this git ref; data from the invoking project
+#   (omitted)      -> branch off HEAD; data from the invoking project
+BASE_REF="HEAD"
+SOURCE_ROOT="$INVOKE_ROOT"
+if [[ -n "$FROM" ]]; then
+  if [[ -e "$FROM/.git" ]]; then
+    SOURCE_ROOT=$(cd "$FROM" && pwd)
+    BASE_REF=$(git -C "$SOURCE_ROOT" rev-parse --abbrev-ref HEAD)
+  else
+    BASE_REF="$FROM"
+  fi
+fi
+
+# `ddev describe` succeeds even for a stopped project, so check the reported
+# status: a stopped project has no "running" containers, so the string is
+# absent; a running one reports it. We need it running to export its database.
+if ! (cd "$SOURCE_ROOT" && ddev describe -j 2>/dev/null) | grep -qE '"status":[[:space:]]*"running"'; then
+  echo "[worktree-provision] source DDEV project at $SOURCE_ROOT is not running." >&2
+  echo "[worktree-provision] start it first: (cd $SOURCE_ROOT && ddev start)" >&2
+  exit 1
+fi
+
+if [[ ! -f "$SOURCE_ROOT/.env" ]]; then
+  echo "[worktree-provision] source has no .env at $SOURCE_ROOT/.env; create it first and rerun" >&2
+  exit 1
+fi
+
+# Create (or reuse) the worktree at .worktrees/<sanitized-branch> under the
+# main checkout — the same convention worktree-remove tears down.
+SANITIZED=$(sanitize "$BRANCH")
+MAIN_ROOT=$(git worktree list --porcelain | sed -n 's/^worktree //p' | head -n1)
+TARGET="$MAIN_ROOT/.worktrees/$SANITIZED"
+
+if [[ "$SOURCE_ROOT" == "$TARGET" ]]; then
+  echo "[worktree-provision] source and target are the same worktree; pick a different --from" >&2
+  exit 1
+fi
+
+if [[ -e "$TARGET/.git" ]]; then
+  echo "[worktree-provision] reusing existing worktree at $TARGET"
+elif git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+  [[ -n "$FROM" ]] && echo "[worktree-provision] branch '$BRANCH' already exists; checking it out (--from base ignored)" >&2
+  echo "[worktree-provision] git worktree add $TARGET $BRANCH"
+  git worktree add "$TARGET" "$BRANCH"
+else
+  echo "[worktree-provision] git worktree add $TARGET -b $BRANCH $BASE_REF"
+  git worktree add "$TARGET" -b "$BRANCH" "$BASE_REF"
+fi
+
+cd "$TARGET"
+
+if [[ -e ./.env ]]; then
+  echo "[worktree-provision] target already has a .env; remove it first if you want it reseeded" >&2
+  exit 1
+fi
+
+# Derive naming from DDEV's own values instead of hardcoding a prefix or
+# parsing YAML.
+#
+# TLD is a repo-wide setting (project_tld), so this repo's DDEV values already
+# carry it. Prefer DDEV_TLD; else split it off DDEV_HOSTNAME (<name>.<tld> — a
+# DDEV project name can't contain a dot); else read the committed config as a
+# last resort; else DDEV's own default.
+TLD="${DDEV_TLD:-}"
+if [[ -z "$TLD" && -n "${DDEV_HOSTNAME:-}" ]]; then
+  # DDEV_HOSTNAME can be a comma-separated list when extra hostnames exist;
+  # take the first, then strip the leading "<name>." to leave the TLD.
+  first_host="${DDEV_HOSTNAME%%,*}"
+  TLD="${first_host#*.}"
+fi
+if [[ -z "$TLD" ]]; then
+  TLD=$(sed -nE "s/^project_tld:[[:space:]]*//p" .ddev/config.yaml 2>/dev/null | head -n1 | tr -d "\"'")
+fi
+[[ -z "$TLD" ]] && TLD="ddev.site"
+
+# The project-name prefix must come from the SOURCE worktree: an unprovisioned
+# target's DDEV name is derived from its directory, whereas the source is
+# running and authoritative. Ask DDEV directly (DDEV_SITENAME inside the source
+# container); only if that comes back empty fall back to the source's config.
+BASE_NAME=$(cd "$SOURCE_ROOT" && ddev exec 'printf %s "${DDEV_SITENAME:-}"' 2>/dev/null | tr -d '\r\n')
+if [[ -z "$BASE_NAME" ]]; then
+  for f in "$SOURCE_ROOT/.ddev/config.local.yaml" "$SOURCE_ROOT/.ddev/config.yaml"; do
+    [[ -f "$f" ]] || continue
+    BASE_NAME=$(sed -nE "s/^name:[[:space:]]*//p" "$f" | head -n1 | tr -d "\"'")
+    [[ -n "$BASE_NAME" ]] && break
+  done
+fi
+[[ -z "$BASE_NAME" ]] && BASE_NAME=$(basename "$SOURCE_ROOT")
+
+PROJECT="${BASE_NAME}-${SANITIZED}"
+NEW_HOST="${PROJECT}.${TLD}"
+
+echo "[worktree-provision] source: $SOURCE_ROOT"
+echo "[worktree-provision] target: $TARGET (project '$PROJECT', branch '$BRANCH')"
+
+DUMP="/tmp/${PROJECT}.sql.gz"
+# The chatty ddev/composer commands below write to this log instead of the
+# terminal (their progress output is carriage-return based and renders badly
+# without a TTY). On failure we print it so the error isn't swallowed.
+LOG=$(mktemp)
+STEP=""
+fail() {
+  echo "[worktree-provision] failed at step: $STEP" >&2
+  [[ -s "$LOG" ]] && sed 's/^/[worktree-provision]   /' "$LOG" >&2
+  rm -f "$LOG"
+  exit 1
+}
+trap fail ERR
+
+# Per-worktree DDEV name override (idempotent).
+STEP="write .ddev/config.local.yaml"
+mkdir -p .ddev
+LOCAL_CFG=".ddev/config.local.yaml"
+touch "$LOCAL_CFG"
+if grep -qE '^name:' "$LOCAL_CFG"; then
+  TMP=$(mktemp)
+  sed -E "s|^name:.*$|name: ${PROJECT}|" "$LOCAL_CFG" > "$TMP"
+  mv "$TMP" "$LOCAL_CFG"
+else
+  printf '\nname: %s\n' "$PROJECT" >> "$LOCAL_CFG"
+fi
+
+# Seed .env from the source worktree, then point the URL/host vars at the
+# new worktree's DDEV hostname. .env.testing is copied as-is when present
+# (its values typically reference in-container hosts that don't change).
+STEP="copy .env from source"
+cp "$SOURCE_ROOT/.env" ./.env
+
+STEP="rewrite host vars in .env"
+sed_args=()
+for var in "${ENV_HOST_VARS[@]}"; do
+  sed_args+=(-e "s|^${var}=.*$|${var}=${NEW_HOST}|")
+done
+for var in "${ENV_URL_VARS[@]}"; do
+  sed_args+=(-e "s|^${var}=.*$|${var}=https://${NEW_HOST}|")
+done
+if [[ ${#sed_args[@]} -gt 0 ]]; then
+  TMP=$(mktemp)
+  sed -E "${sed_args[@]}" ./.env > "$TMP"
+  mv "$TMP" ./.env
+fi
+echo "[worktree-provision] .env host vars repointed to ${NEW_HOST}"
+
+STEP="copy .env.testing from source (optional)"
+if [[ -f "$SOURCE_ROOT/.env.testing" ]]; then
+  if [[ -e ./.env.testing ]]; then
+    echo "[worktree-provision] .env.testing already present in target, skipping"
+  else
+    cp "$SOURCE_ROOT/.env.testing" ./.env.testing
+    echo "[worktree-provision] copied .env.testing"
+  fi
+fi
+
+STEP="export-db from source project"
+(cd "$SOURCE_ROOT" && ddev export-db --gzip --file="$DUMP") >"$LOG" 2>&1
+
+# First start with hooks skipped: a project's post-start hooks may need
+# dependencies (e.g. Drupal's `drush cache:rebuild`) or the database, and
+# neither exists yet. We run them for real via `ddev restart` once both are
+# in place, below.
+STEP="ddev start in worktree"
+ddev start -y --skip-hooks >"$LOG" 2>&1
+
+# Install dependencies inside the container so the exact install paths declared
+# in composer.json / package.json are honoured — including framework-specific
+# ones like Drupal's installer-paths (app/core, app/modules/contrib, …) that a
+# plain vendor/ copy would miss. Reads from DDEV's shared package caches, so
+# this is usually fast on a warm cache and always correct.
+if [[ -f composer.json ]]; then
+  STEP="composer install"
+  echo "[worktree-provision] composer install"
+  ddev composer install --no-interaction --no-progress >"$LOG" 2>&1
+fi
+
+# JS dependencies: pick the tool from whichever lockfile is present.
+JS_INSTALL=""
+if [[ -f bun.lockb || -f bun.lock ]]; then
+  JS_INSTALL="bun install --frozen-lockfile"
+elif [[ -f pnpm-lock.yaml ]]; then
+  JS_INSTALL="pnpm install --frozen-lockfile"
+elif [[ -f yarn.lock ]]; then
+  JS_INSTALL="yarn install --frozen-lockfile"
+elif [[ -f package-lock.json ]]; then
+  JS_INSTALL="npm ci"
+elif [[ -f package.json ]]; then
+  JS_INSTALL="npm install"
+fi
+if [[ -n "$JS_INSTALL" ]]; then
+  echo "[worktree-provision] ${JS_INSTALL} (JS deps)"
+  # Best-effort: a package manager missing from the web image shouldn't abort
+  # the whole provision — the backend and DB are already in place.
+  if ! ddev exec $JS_INSTALL >"$LOG" 2>&1; then
+    echo "[worktree-provision] warning: '${JS_INSTALL}' failed or its tool isn't in the web image; install JS deps manually if you need them" >&2
+    [[ -s "$LOG" ]] && sed 's/^/[worktree-provision]   /' "$LOG" | tail -5 >&2
+  fi
+fi
+
+STEP="ddev import-db in worktree"
+ddev import-db --file="$DUMP" >"$LOG" 2>&1
+
+# Now that dependencies and the database are present, restart so the project's
+# own post-start hooks run once, cleanly (e.g. pp-api creates db_testing;
+# Drupal rebuilds caches). Portable: whatever hooks a project defines just run.
+STEP="ddev restart (run project post-start hooks)"
+ddev restart -y >"$LOG" 2>&1
+
+STEP="cleanup"
+rm -f "$DUMP" "$LOG"
+
+trap - ERR
+
+echo "[worktree-provision] ready: https://${NEW_HOST}"
+echo "[worktree-provision] cd $TARGET"

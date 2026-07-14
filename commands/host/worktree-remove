@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+
+## Description: Remove a worktree and its associated DDEV project cleanly
+## Usage: worktree-remove <branch> [extra git worktree remove flags...]
+## Example: "ddev worktree-remove feat/login"
+## OSTypes: darwin,linux
+#ddev-generated
+
+# Companion to `ddev worktree-provision` — that one creates the DDEV project
+# and worktree state; this one tears it all down cleanly.
+#
+#   ddev worktree-remove feat/login          # normal remove
+#   ddev worktree-remove feat/login --force  # force-remove with uncommitted changes
+#
+# Tolerant of partial state — the DDEV project may already be gone, or the
+# worktree directory may have been removed manually. Either way, this command
+# brings everything to a clean end state.
+
+set -euo pipefail
+
+# Anchor to the project root; git commands below then run against this repo.
+cd "${DDEV_APPROOT:-$PWD}"
+
+if [[ $# -lt 1 ]]; then
+  echo "Usage: ddev worktree-remove <branch> [extra git worktree remove flags...]" >&2
+  exit 1
+fi
+
+BRANCH="$1"
+shift
+
+sanitize() {
+  printf '%s' "$1" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g; s/^-//; s/-$//'
+}
+
+SANITIZED=$(sanitize "$BRANCH")
+MAIN_ROOT=$(git worktree list --porcelain | sed -n 's/^worktree //p' | head -n 1)
+# Sanitized to match the convention worktree-provision documents:
+#   git worktree add .worktrees/<sanitized-branch> <branch>
+WORKTREE_PATH="$MAIN_ROOT/.worktrees/$SANITIZED"
+
+# Resolve the DDEV project name without hardcoding a prefix. Prefer the name
+# worktree-provision wrote into the worktree's own config.local.yaml; else
+# fall back to <base>-<branch>, where <base> is this base project's DDEV name
+# (DDEV_SITENAME when run as `ddev worktree-remove`, else read from config).
+PROJECT=""
+if [[ -f "$WORKTREE_PATH/.ddev/config.local.yaml" ]]; then
+  PROJECT=$(sed -nE "s/^name:[[:space:]]*//p" "$WORKTREE_PATH/.ddev/config.local.yaml" | head -n1 | tr -d "\"'")
+fi
+if [[ -z "$PROJECT" ]]; then
+  BASE_NAME="${DDEV_SITENAME:-}"
+  if [[ -z "$BASE_NAME" ]]; then
+    for f in "$MAIN_ROOT/.ddev/config.local.yaml" "$MAIN_ROOT/.ddev/config.yaml"; do
+      [[ -f "$f" ]] || continue
+      BASE_NAME=$(sed -nE "s/^name:[[:space:]]*//p" "$f" | head -n1 | tr -d "\"'")
+      [[ -n "$BASE_NAME" ]] && break
+    done
+  fi
+  [[ -n "$BASE_NAME" ]] && PROJECT="${BASE_NAME}-${SANITIZED}"
+fi
+
+# Step 1: tear down the DDEV project if it exists.
+if ! command -v ddev >/dev/null 2>&1; then
+  echo "[worktree-remove] ddev not on PATH; skipping DDEV teardown" >&2
+elif [[ -z "$PROJECT" ]]; then
+  echo "[worktree-remove] could not resolve a DDEV project name; skipping DDEV teardown" >&2
+elif ddev describe "$PROJECT" -j >/dev/null 2>&1; then
+  echo "[worktree-remove] tearing down DDEV project '$PROJECT'"
+  ddev delete -Oy "$PROJECT"
+else
+  echo "[worktree-remove] no DDEV project '$PROJECT' to delete"
+fi
+
+# Step 2: remove the worktree (or prune stale registration if it's already gone).
+if [[ -d "$WORKTREE_PATH" ]]; then
+  echo "[worktree-remove] removing worktree at $WORKTREE_PATH"
+  git worktree remove "$@" "$WORKTREE_PATH"
+else
+  echo "[worktree-remove] $WORKTREE_PATH not on disk; pruning stale registrations"
+  git worktree prune
+fi
+
+echo "[worktree-remove] done"
