@@ -13,4 +13,4 @@ project_files:
   - commands/host/worktree-remove
 
 post_install_actions:
-  - 'echo "ddev-worktree installed. Create + provision a worktree with:  ddev worktree-provision <branch> [--from <ref|path>]"'
+  - 'echo "ddev-worktree installed. Create + provision a worktree with: ddev worktree-provision <branch> [--from <ref|path>]"'
