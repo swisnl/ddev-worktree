@@ -1,5 +1,10 @@
 # ddev-worktree
 
+> ⚠️ **Experimental.** This add-on is new and under active development. It has
+> been verified on SWIS Laravel and Drupal projects, but expect rough edges and
+> breaking changes before a 1.0 release. Use on throwaway worktrees, not on
+> anything you can't afford to lose.
+
 A [DDEV](https://ddev.com) add-on that turns a git worktree into a fully isolated
 DDEV project in one command — its own project name, hostname, database, and
 dependencies — so you can run several branches side by side without them
