@@ -10,7 +10,14 @@
 # and worktree state; this one tears it all down cleanly.
 #
 #   ddev worktree-remove feat/login          # normal remove
-#   ddev worktree-remove feat/login --force  # force-remove with uncommitted changes
+#   ddev worktree-remove feat/login --force  # force-remove, discarding tracked edits too
+#
+# Provisioning leaves untracked files in the worktree (the copied .env,
+# .ddev/config.local.yaml, installed deps), which would make a plain
+# `git worktree remove` refuse. So when no flags are given this command removes
+# the worktree even with such generated/untracked files present, but still
+# refuses if there are uncommitted changes to *tracked* files — pass --force to
+# discard those too.
 #
 # Tolerant of partial state — the DDEV project may already be gone, or the
 # worktree directory may have been removed manually. Either way, this command
@@ -74,12 +81,28 @@ else
 fi
 
 # Step 2: remove the worktree (or prune stale registration if it's already gone).
-if [[ -d "$WORKTREE_PATH" ]]; then
+if [[ ! -d "$WORKTREE_PATH" ]]; then
+  echo "[worktree-remove] $WORKTREE_PATH not on disk; pruning stale registrations"
+  git worktree prune
+elif [[ $# -gt 0 ]]; then
+  # Caller passed explicit flags (e.g. --force); respect them verbatim.
   echo "[worktree-remove] removing worktree at $WORKTREE_PATH"
   git worktree remove "$@" "$WORKTREE_PATH"
 else
-  echo "[worktree-remove] $WORKTREE_PATH not on disk; pruning stale registrations"
-  git worktree prune
+  echo "[worktree-remove] removing worktree at $WORKTREE_PATH"
+  if git worktree remove "$WORKTREE_PATH" 2>/dev/null; then
+    :
+  elif [[ -z "$(git -C "$WORKTREE_PATH" status --porcelain --untracked-files=no)" ]]; then
+    # Nothing but provisioning-generated / untracked files stood in the way
+    # (no uncommitted changes to tracked files) — safe to force.
+    echo "[worktree-remove] only generated/untracked files present; forcing removal"
+    git worktree remove --force "$WORKTREE_PATH"
+  else
+    echo "[worktree-remove] worktree has uncommitted changes to tracked files;" >&2
+    echo "                  refusing to discard them. Re-run to override:" >&2
+    echo "                    ddev worktree-remove $BRANCH --force" >&2
+    exit 1
+  fi
 fi
 
 echo "[worktree-remove] done"

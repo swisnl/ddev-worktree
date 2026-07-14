@@ -34,7 +34,7 @@ ddev worktree-provision spike --from ../other-checkout
 
 # tear it all down (DDEV project + git worktree)
 ddev worktree-remove my-feature
-ddev worktree-remove my-feature --force   # if the worktree has uncommitted changes
+ddev worktree-remove my-feature --force   # also discard uncommitted edits to tracked files
 ```
 
 `worktree-provision <branch> [--from <ref|path>]`:
