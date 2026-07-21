@@ -31,6 +31,12 @@ teardown() {
   run ddev worktree-provision -h
   [ "$status" -eq 0 ]
   [[ "$output" == *"Usage: ddev worktree-provision"* ]]
+  [[ "$output" == *"--phpstorm"* ]]
+
+  # editor flags are mutually exclusive
+  run ddev worktree-provision my-branch --phpstorm --vscode
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"pick one editor flag"* ]]
 
   # missing required arg -> usage + non-zero exit
   run ddev worktree-remove

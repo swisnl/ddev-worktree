@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 ## Description: Create a git worktree and provision it as an isolated DDEV project (deps installed, DB copied)
-## Usage: worktree-provision <branch> [--from <branch|path>]
+## Usage: worktree-provision <branch> [--from <branch|path>] [--phpstorm|--vscode|--cursor]
 ## Example: "ddev worktree-provision my-feature"
 ## OSTypes: darwin,linux
 #ddev-generated
@@ -15,6 +15,9 @@
 #                  one — for external worktree managers (e.g. worktrunk) that own
 #                  worktree creation and call this from a post-start hook. Seeds
 #                  from --from if given, else from the primary worktree.
+#   --phpstorm     open the provisioned worktree in PhpStorm when done
+#   --vscode       … in VS Code
+#   --cursor       … in Cursor
 #
 # The database + .env are always copied from a *running* DDEV project: the
 # --from path if one is given, otherwise the project you invoked this in.
@@ -22,6 +25,7 @@
 # Examples:
 #   ddev worktree-provision my-feature              # new branch off HEAD, seed from here
 #   ddev worktree-provision hotfix --from develop   # new branch off develop, seed from here
+#   ddev worktree-provision fix-123 --phpstorm      # …and open it in PhpStorm when ready
 #   ddev worktree-provision --in-place --from /path/to/primary   # from a worktrunk hook
 #
 # Companion to `ddev worktree-remove` — that one tears down what this
@@ -55,19 +59,84 @@ sanitize() {
     | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g; s/^-//; s/-$//'
 }
 
+is_wsl() {
+  [[ -n "${WSL_DISTRO_NAME:-}" ]] || grep -qi microsoft /proc/version 2>/dev/null
+}
+
+# launch <cmd> [args…] — detached and silenced, so a launcher that stays in the
+# foreground (JetBrains CLI scripts do) can't hold the provision open.
+launch() {
+  ("$@" >/dev/null 2>&1 &)
+}
+
+# Open $2 in editor $1, best-effort: a missing launcher warns but must never
+# fail the provision. On WSL the Windows editor is invoked against the
+# \\wsl$\… form of the path (wslpath -w), which PhpStorm and friends open fine.
+# VS Code and Cursor put a `code`/`cursor` shim on the WSL PATH themselves.
+open_editor() {
+  local editor="$1" path="$2" exe
+  case "$editor" in
+    phpstorm)
+      if command -v phpstorm >/dev/null 2>&1; then
+        launch phpstorm "$path"
+      elif [[ "$(uname -s)" == "Darwin" ]] && open -na "PhpStorm" --args "$path" 2>/dev/null; then
+        : # opened via the app bundle; no CLI launcher needed
+      elif is_wsl; then
+        for exe in phpstorm64.exe phpstorm.exe; do
+          if command -v "$exe" >/dev/null 2>&1; then
+            launch "$exe" "$(wslpath -w "$path")"
+            return 0
+          fi
+        done
+        echo "[worktree-provision] warning: no PhpStorm launcher found (phpstorm, phpstorm64.exe); open $path yourself" >&2
+      else
+        echo "[worktree-provision] warning: no PhpStorm launcher found (install the 'phpstorm' CLI via Toolbox); open $path yourself" >&2
+      fi
+      ;;
+    vscode)
+      if command -v code >/dev/null 2>&1; then
+        launch code "$path"
+      elif [[ "$(uname -s)" == "Darwin" ]] && open -na "Visual Studio Code" --args "$path" 2>/dev/null; then
+        :
+      else
+        echo "[worktree-provision] warning: no VS Code launcher found ('code' not on PATH); open $path yourself" >&2
+      fi
+      ;;
+    cursor)
+      if command -v cursor >/dev/null 2>&1; then
+        launch cursor "$path"
+      elif [[ "$(uname -s)" == "Darwin" ]] && open -na "Cursor" --args "$path" 2>/dev/null; then
+        :
+      else
+        echo "[worktree-provision] warning: no Cursor launcher found ('cursor' not on PATH); open $path yourself" >&2
+      fi
+      ;;
+  esac
+}
+
 usage() {
-  echo "Usage: ddev worktree-provision <branch> [--from <ref|path>]"
+  echo "Usage: ddev worktree-provision <branch> [--from <ref|path>] [--phpstorm|--vscode|--cursor]"
   echo "       ddev worktree-provision --in-place [--from <path>]"
   echo "Creates .worktrees/<branch> (branched off <ref>, default HEAD) and"
   echo "provisions it. The database + .env are copied from a running project"
   echo "(the --from path if given, else the project you run this in)."
   echo "With --in-place, provisions the worktree you're already in (for external"
   echo "worktree managers like worktrunk); seeds from --from, else the primary."
+  echo "With --phpstorm / --vscode / --cursor, opens the worktree in that editor"
+  echo "once provisioning succeeds (best-effort; a missing launcher only warns)."
 }
 
 BRANCH=""
 FROM=""
 IN_PLACE=""
+OPEN_IN=""
+set_open_in() {
+  if [[ -n "$OPEN_IN" && "$OPEN_IN" != "$1" ]]; then
+    echo "[worktree-provision] pick one editor flag: --phpstorm, --vscode or --cursor" >&2
+    exit 2
+  fi
+  OPEN_IN="$1"
+}
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --from)
@@ -76,6 +145,18 @@ while [[ $# -gt 0 ]]; do
       ;;
     --in-place)
       IN_PLACE=1
+      shift
+      ;;
+    --phpstorm)
+      set_open_in phpstorm
+      shift
+      ;;
+    --vscode)
+      set_open_in vscode
+      shift
+      ;;
+    --cursor)
+      set_open_in cursor
       shift
       ;;
     -h|--help)
@@ -351,3 +432,8 @@ trap - ERR
 
 echo "[worktree-provision] ready: https://${NEW_HOST}"
 echo "[worktree-provision] cd $TARGET"
+
+if [[ -n "$OPEN_IN" ]]; then
+  echo "[worktree-provision] opening in ${OPEN_IN}"
+  open_editor "$OPEN_IN" "$TARGET"
+fi

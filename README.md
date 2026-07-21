@@ -37,6 +37,9 @@ ddev worktree-provision fix-123 --from v2.1.0
 # branch off AND seed data from another checkout on disk
 ddev worktree-provision spike --from ../other-checkout
 
+# open the worktree in your editor once it's ready
+ddev worktree-provision fix-123 --phpstorm     # or --vscode / --cursor
+
 # tear it all down (DDEV project + git worktree)
 ddev worktree-remove my-feature
 ddev worktree-remove my-feature --force   # also discard uncommitted edits to tracked files
@@ -57,6 +60,18 @@ ddev worktree-remove my-feature --force   # also discard uncommitted edits to tr
 The **source** (the project supplying `.env` + database) must be running; it
 defaults to the project you run the command in, or the `--from` path if that is
 a checkout on disk.
+
+### Opening the worktree in your editor
+
+`--phpstorm`, `--vscode`, and `--cursor` open the provisioned worktree in that
+editor as the final step. Opening is best-effort: if no launcher is found the
+command warns and still exits successfully.
+
+- **PhpStorm** uses the `phpstorm` CLI launcher if present (enable it in
+  JetBrains Toolbox), falls back to `open -na PhpStorm` on macOS, and on WSL
+  runs the Windows `phpstorm64.exe` against the `\\wsl$\…` path.
+- **VS Code / Cursor** use the `code` / `cursor` CLIs, which already do the
+  right thing on WSL via their own shims.
 
 ## Config
 
