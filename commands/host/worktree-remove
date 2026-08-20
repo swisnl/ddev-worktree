@@ -74,6 +74,16 @@ else
   WORKTREE_PATH="$MAIN_ROOT/.worktrees/$SANITIZED"
 fi
 
+# `ddev delete` drops the worktree's database irrecoverably, so tracked edits
+# have to be refused up front rather than after the teardown.
+if [[ -z "$IN_PLACE" && $# -eq 0 && -d "$WORKTREE_PATH" ]] &&
+   [[ -n "$(git -C "$WORKTREE_PATH" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
+  echo "[worktree-remove] worktree has uncommitted changes to tracked files;" >&2
+  echo "                  refusing to discard them. Re-run to override:" >&2
+  echo "                    ddev worktree-remove $BRANCH --force" >&2
+  exit 1
+fi
+
 # Resolve the DDEV project name without hardcoding a prefix. Prefer the name
 # worktree-provision wrote into the worktree's own config.local.yaml; else
 # fall back to <base>-<branch>, where <base> is this base project's DDEV name
@@ -120,18 +130,11 @@ elif [[ $# -gt 0 ]]; then
   git worktree remove "$@" "$WORKTREE_PATH"
 else
   echo "[worktree-remove] removing worktree at $WORKTREE_PATH"
-  if git worktree remove "$WORKTREE_PATH" 2>/dev/null; then
-    :
-  elif [[ -z "$(git -C "$WORKTREE_PATH" status --porcelain --untracked-files=no)" ]]; then
-    # Nothing but provisioning-generated / untracked files stood in the way
-    # (no uncommitted changes to tracked files) — safe to force.
+  if ! git worktree remove "$WORKTREE_PATH" 2>/dev/null; then
+    # Tracked edits were ruled out above, so only generated/untracked files
+    # can still be in the way.
     echo "[worktree-remove] only generated/untracked files present; forcing removal"
     git worktree remove --force "$WORKTREE_PATH"
-  else
-    echo "[worktree-remove] worktree has uncommitted changes to tracked files;" >&2
-    echo "                  refusing to discard them. Re-run to override:" >&2
-    echo "                    ddev worktree-remove $BRANCH --force" >&2
-    exit 1
   fi
 fi
 

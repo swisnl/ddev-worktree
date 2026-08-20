@@ -49,6 +49,26 @@ teardown() {
   [[ "$output" == *"Usage: ddev worktree-provision"* ]]
 }
 
+@test "remove refuses uncommitted tracked edits before touching the DDEV project" {
+  set -eu -o pipefail
+  cd "${TESTDIR}"
+
+  ddev add-on get "${DIR}"
+
+  git init -q .
+  echo original > tracked.txt
+  git add tracked.txt
+  git -c user.email=t@example.com -c user.name=Test commit -q -m init
+  git worktree add .worktrees/dirty -b dirty >/dev/null
+  echo edited > .worktrees/dirty/tracked.txt
+
+  run ddev worktree-remove dirty
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"uncommitted changes to tracked files"* ]]
+  # `ddev delete` drops the database for good, so nothing may be torn down first
+  [[ "$output" != *"DDEV project"* ]]
+}
+
 @test "remove deletes the add-on files" {
   set -eu -o pipefail
   cd "${TESTDIR}"
