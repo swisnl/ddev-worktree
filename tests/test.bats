@@ -7,7 +7,10 @@ setup() {
   set -eu -o pipefail
   export DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." >/dev/null 2>&1 && pwd)"
   export PROJNAME="test-ddev-worktree"
-  export TESTDIR="$(mktemp -d)"
+  # Resolved: on macOS mktemp -d hands back /var/... for /private/var/..., and
+  # DDEV registers a project under the exact path it was configured from, so an
+  # unresolved test dir makes project lookup from a subdirectory miss.
+  export TESTDIR="$(cd "$(mktemp -d)" && pwd -P)"
   export DDEV_NONINTERACTIVE=true
   ddev delete -Oy "${PROJNAME}" >/dev/null 2>&1 || true
   cd "${TESTDIR}"
@@ -16,6 +19,9 @@ setup() {
 
 teardown() {
   set -eu -o pipefail
+  # Worktrees provisioned by a test get their own DDEV project, named
+  # <source>-<branch>; drop those before the source so nothing is left running.
+  ddev delete -Oy "${PROJNAME}-nodb" >/dev/null 2>&1 || true
   ddev delete -Oy "${PROJNAME}" >/dev/null 2>&1 || true
   [ -n "${TESTDIR:-}" ] && rm -rf "${TESTDIR}"
 }
@@ -67,6 +73,47 @@ teardown() {
   [[ "$output" == *"uncommitted changes to tracked files"* ]]
   # `ddev delete` drops the database for good, so nothing may be torn down first
   [[ "$output" != *"DDEV project"* ]]
+}
+
+@test "provisions a project that has no db container and no .env" {
+  set -eu -o pipefail
+  cd "${TESTDIR}"
+
+  ddev add-on get "${DIR}"
+
+  # A library-style project: no database, no .env — nothing to seed.
+  ddev config --omit-containers=db >/dev/null
+
+  git init -q .
+  echo lib > README.md
+  git add README.md .ddev
+  git -c user.email=t@example.com -c user.name=Test commit -q -m init
+
+  ddev start -y >/dev/null
+
+  run ddev worktree-provision nodb
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no db container; skipping database copy"* ]]
+  [[ "$output" == *"no .env"* ]]
+  [[ "$output" == *"nothing to seed"* ]]
+
+  # The worktree exists and its own DDEV project is up.
+  [ -e .worktrees/nodb/.git ]
+  run ddev describe -j "${PROJNAME}-nodb"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"status":"running"'* ]]
+
+  # DDEV must resolve to the worktree from inside it. .worktrees/<branch> is
+  # nested in the source approot, and since DDEV v1.25.4 an unregistered nested
+  # project is passed over for the one around it — which would point every
+  # command here at the source checkout instead.
+  cd .worktrees/nodb
+  run ddev describe -j
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"\"name\":\"${PROJNAME}-nodb\""* ]]
+  # Compare resolved paths: a temp dir reaches here through a symlink.
+  approot=$(printf '%s' "$output" | grep -o '"approot":"[^"]*"' | head -n1 | cut -d'"' -f4)
+  [ "$(cd "$approot" && pwd -P)" = "$(pwd -P)" ]
 }
 
 @test "remove deletes the add-on files" {
