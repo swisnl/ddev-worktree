@@ -302,13 +302,20 @@ fi
 # install` would run against the source checkout, not this worktree. Seed the
 # config from the source so the target is a project in its own right.
 #
+# Only what the target is missing is filled in. A repo can track part of .ddev/
+# and ignore the rest — committing .ddev/commands/host/worktree-* for worktrunk
+# while config.yaml stays ignored is exactly what this README recommends — and
+# those files belong to the branch being provisioned, not to the source. Copying
+# over them would clobber branch-specific commands and leave the worktree dirty.
+#
 # Generated per-project runtime state is left behind: DDEV rewrites the compose
 # files on start, and db_snapshots can be large and belongs to the source.
 if [[ ! -f ./.ddev/config.yaml ]]; then
   echo "[worktree-provision] target has no .ddev/config.yaml (.ddev is untracked); seeding it from the source"
   mkdir -p ./.ddev
   for entry in "$SOURCE_ROOT"/.ddev/* "$SOURCE_ROOT"/.ddev/.[!.]*; do
-    [[ -e "$entry" ]] || continue   # unmatched glob
+    [[ -e "$entry" ]] || continue                 # unmatched glob
+    [[ -e "./.ddev/${entry##*/}" ]] && continue   # the checkout's own copy wins
     case "${entry##*/}" in
       .ddev-docker-compose-*.yaml|.global_commands|.homeadditions|db_snapshots) continue ;;
     esac

@@ -22,6 +22,7 @@ teardown() {
   # Worktrees provisioned by a test get their own DDEV project, named
   # <source>-<branch>; drop those before the source so nothing is left running.
   ddev delete -Oy "${PROJNAME}-nodb" >/dev/null 2>&1 || true
+  ddev delete -Oy "${PROJNAME}-seed" >/dev/null 2>&1 || true
   ddev delete -Oy "${PROJNAME}" >/dev/null 2>&1 || true
   [ -n "${TESTDIR:-}" ] && rm -rf "${TESTDIR}"
 }
@@ -114,6 +115,44 @@ teardown() {
   # Compare resolved paths: a temp dir reaches here through a symlink.
   approot=$(printf '%s' "$output" | grep -o '"approot":"[^"]*"' | head -n1 | cut -d'"' -f4)
   [ "$(cd "$approot" && pwd -P)" = "$(pwd -P)" ]
+}
+
+@test "seeding .ddev keeps the checkout's own files" {
+  set -eu -o pipefail
+  cd "${TESTDIR}"
+
+  ddev add-on get "${DIR}"
+  ddev config --omit-containers=db >/dev/null
+
+  # A repo that tracks part of .ddev/ and ignores the rest — committing command
+  # files while config.yaml stays ignored is what the README recommends for
+  # worktrunk. The tracked ones belong to the branch, not to the source.
+  git init -q .
+  printf '/.ddev/config.yaml\n.worktrees/\n' > .gitignore
+  mkdir -p .ddev/commands/host
+  echo branch-version > .ddev/commands/host/marker
+  chmod +x .ddev/commands/host/marker   # DDEV makes command files executable
+  git add .gitignore .ddev/commands/host/marker
+  git -c user.email=t@example.com -c user.name=Test commit -q -m init
+
+  # The source's copy now differs from the committed one, so a clobber shows up.
+  echo source-version > .ddev/commands/host/marker
+
+  ddev start -y >/dev/null
+
+  run ddev worktree-provision seed
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"seeding it from the source"* ]]
+
+  # config.yaml was missing, so it gets seeded...
+  [ -f .worktrees/seed/.ddev/config.yaml ]
+  # ...but the branch's own command file is left alone.
+  [ "$(cat .worktrees/seed/.ddev/commands/host/marker)" = "branch-version" ]
+
+  # And no tracked file in the worktree was touched.
+  run git -C .worktrees/seed status --porcelain --untracked-files=no
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
 }
 
 @test "remove deletes the add-on files" {
