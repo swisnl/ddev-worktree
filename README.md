@@ -57,6 +57,11 @@ ddev worktree-remove my-feature --force   # also discard uncommitted edits to tr
 6. starts the project, running its normal post-start hooks once everything is in
    place.
 
+Steps 3 and 5 are skipped when there is nothing to do: a project that omits the
+db container (`omit_containers: [db]`) gets no database copy, and a repo with no
+`.env` gets no `.env` seeded. A library or a static site with neither is
+provisioned from dependencies and hooks alone.
+
 The **source** (the project supplying `.env` + database) must be running; it
 defaults to the project you run the command in, or the `--from` path if that is
 a checkout on disk.
@@ -150,6 +155,15 @@ Notes for this setup:
 - Package managers other than npm must be available in the web container
   (usually via `corepack_enable: true` in `.ddev/config.yaml`, which every
   worktree inherits). If a tool is missing the JS step warns and continues.
+- `.worktrees/<branch>` sits inside the source project's approot, and since DDEV
+  v1.25.4 an unregistered *nested* project is passed over in favour of the one
+  around it. Provisioning therefore registers the worktree with
+  `ddev config --project-name=<name>` and puts `.ddev/config.yaml` back as it
+  was, so no diff is left in repos that track it. It then verifies that DDEV
+  resolves to the worktree and stops if it does not, rather than running
+  `composer install` and the database import against the source project.
+- Repos that keep `.ddev/` out of git get it seeded from the source, since a
+  worktree only checks out tracked files and DDEV needs a `config.yaml` here.
 
 ## Requirements
 

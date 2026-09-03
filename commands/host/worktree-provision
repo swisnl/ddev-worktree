@@ -19,8 +19,11 @@
 #   --vscode       … in VS Code
 #   --cursor       … in Cursor
 #
-# The database + .env are always copied from a *running* DDEV project: the
-# --from path if one is given, otherwise the project you invoked this in.
+# The database + .env are copied from a *running* DDEV project: the --from path
+# if one is given, otherwise the project you invoked this in. Either may be
+# absent — a project that omits the db container, or a repo with no .env, is
+# provisioned with whatever it does have (dependencies, hooks) and the missing
+# step is skipped rather than treated as an error.
 #
 # Examples:
 #   ddev worktree-provision my-feature              # new branch off HEAD, seed from here
@@ -119,7 +122,8 @@ usage() {
   echo "       ddev worktree-provision --in-place [--from <path>]"
   echo "Creates .worktrees/<branch> (branched off <ref>, default HEAD) and"
   echo "provisions it. The database + .env are copied from a running project"
-  echo "(the --from path if given, else the project you run this in)."
+  echo "(the --from path if given, else the project you run this in); a project"
+  echo "without a db container or without a .env simply skips that step."
   echo "With --in-place, provisions the worktree you're already in (for external"
   echo "worktree managers like worktrunk); seeds from --from, else the primary."
   echo "With --phpstorm / --vscode / --cursor, opens the worktree in that editor"
@@ -225,15 +229,35 @@ fi
 # `ddev describe` succeeds even for a stopped project, so check the reported
 # status: a stopped project has no "running" containers, so the string is
 # absent; a running one reports it. We need it running to export its database.
-if ! (cd "$SOURCE_ROOT" && ddev describe -j 2>/dev/null) | grep -qE '"status":[[:space:]]*"running"'; then
+SOURCE_DESCRIBE=$( (cd "$SOURCE_ROOT" && ddev describe -j 2>/dev/null) || true )
+if ! grep -qE '"status":[[:space:]]*"running"' <<<"$SOURCE_DESCRIBE"; then
   echo "[worktree-provision] source DDEV project at $SOURCE_ROOT is not running." >&2
   echo "[worktree-provision] start it first: (cd $SOURCE_ROOT && ddev start)" >&2
   exit 1
 fi
 
-if [[ ! -f "$SOURCE_ROOT/.env" ]]; then
-  echo "[worktree-provision] source has no .env at $SOURCE_ROOT/.env; create it first and rerun" >&2
-  exit 1
+# A project that omits the db container (`omit_containers: [db]` — a library, a
+# static site) has no database to copy, and `ddev export-db` on it hard-fails
+# with "service db does not exist". DDEV emits a "dbinfo" object only when a
+# database exists, so its absence is the signal to skip the DB steps entirely.
+HAS_DB=""
+if grep -q '"dbinfo"' <<<"$SOURCE_DESCRIBE"; then
+  HAS_DB=1
+else
+  echo "[worktree-provision] source has no db container; skipping database copy"
+fi
+
+# Likewise a repo may simply have no .env to seed (again: libraries, or any
+# project that keeps its config elsewhere). That is not an error either.
+HAS_ENV=""
+if [[ -f "$SOURCE_ROOT/.env" ]]; then
+  HAS_ENV=1
+else
+  echo "[worktree-provision] source has no .env at $SOURCE_ROOT/.env; skipping .env seeding"
+fi
+
+if [[ -z "$HAS_DB" && -z "$HAS_ENV" ]]; then
+  echo "[worktree-provision] nothing to seed; provisioning the worktree with dependencies only"
 fi
 
 # In --in-place mode the worktree already exists (the caller created it) and is our
@@ -266,9 +290,37 @@ fi
 
 cd "$TARGET"
 
-if [[ -e ./.env ]]; then
+if [[ -n "$HAS_ENV" && -e ./.env ]]; then
   echo "[worktree-provision] target already has a .env; remove it first if you want it reseeded" >&2
   exit 1
+fi
+
+# A worktree only carries what git tracks, so a repo that keeps .ddev/ out of
+# version control (a catch-all `.*` .gitignore, say) checks out with no
+# .ddev/config.yaml. DDEV then finds no project root here and walks UP to the
+# source project, silently binding every command below to it — `ddev composer
+# install` would run against the source checkout, not this worktree. Seed the
+# config from the source so the target is a project in its own right.
+#
+# Only what the target is missing is filled in. A repo can track part of .ddev/
+# and ignore the rest — committing .ddev/commands/host/worktree-* for worktrunk
+# while config.yaml stays ignored is exactly what this README recommends — and
+# those files belong to the branch being provisioned, not to the source. Copying
+# over them would clobber branch-specific commands and leave the worktree dirty.
+#
+# Generated per-project runtime state is left behind: DDEV rewrites the compose
+# files on start, and db_snapshots can be large and belongs to the source.
+if [[ ! -f ./.ddev/config.yaml ]]; then
+  echo "[worktree-provision] target has no .ddev/config.yaml (.ddev is untracked); seeding it from the source"
+  mkdir -p ./.ddev
+  for entry in "$SOURCE_ROOT"/.ddev/* "$SOURCE_ROOT"/.ddev/.[!.]*; do
+    [[ -e "$entry" ]] || continue                 # unmatched glob
+    [[ -e "./.ddev/${entry##*/}" ]] && continue   # the checkout's own copy wins
+    case "${entry##*/}" in
+      .ddev-docker-compose-*.yaml|.global_commands|.homeadditions|db_snapshots) continue ;;
+    esac
+    cp -R "$entry" ./.ddev/
+  done
 fi
 
 # Derive naming from DDEV's own values instead of hardcoding a prefix or
@@ -341,26 +393,55 @@ else
   printf '\nname: %s\n' "$PROJECT" >> "$LOCAL_CFG"
 fi
 
+# Register the worktree as a DDEV project in its own right.
+#
+# `.worktrees/<branch>` always sits inside the source project's approot, and as
+# of DDEV v1.25.4 a *nested* project is ignored until it has been registered —
+# `ddev` acts on the enclosing project instead (ddev/ddev#8327). Bare
+# `ddev start` asks whether to use the nested project and `-y` answers no, so
+# without this every command below (composer install, import-db, restart) would
+# silently run against the SOURCE checkout.
+#
+# `ddev config` is documented as the exception that acts on the directory it is
+# in, so it is what registers us. It also rewrites .ddev/config.yaml wholesale
+# (regenerated comments, its own `name:`), which in a repo that tracks .ddev/
+# would leave a large diff and trip worktree-remove's uncommitted-changes guard.
+# The registration is recorded outside the file, so the original goes straight
+# back afterwards and the name override stays in config.local.yaml.
+STEP="register nested DDEV project"
+CFG_BACKUP=""
+if [[ -f .ddev/config.yaml ]]; then
+  CFG_BACKUP=$(mktemp)
+  cp .ddev/config.yaml "$CFG_BACKUP"
+fi
+ddev config --project-name="$PROJECT" >"$LOG" 2>&1
+if [[ -n "$CFG_BACKUP" ]]; then
+  cp "$CFG_BACKUP" .ddev/config.yaml
+  rm -f "$CFG_BACKUP"
+fi
+
 # Seed .env from the source worktree, then point the URL/host vars at the
 # new worktree's DDEV hostname. .env.testing is copied as-is when present
 # (its values typically reference in-container hosts that don't change).
-STEP="copy .env from source"
-cp "$SOURCE_ROOT/.env" ./.env
+if [[ -n "$HAS_ENV" ]]; then
+  STEP="copy .env from source"
+  cp "$SOURCE_ROOT/.env" ./.env
 
-STEP="rewrite host vars in .env"
-sed_args=()
-for var in "${ENV_HOST_VARS[@]}"; do
-  sed_args+=(-e "s|^${var}=.*$|${var}=${NEW_HOST}|")
-done
-for var in "${ENV_URL_VARS[@]}"; do
-  sed_args+=(-e "s|^${var}=.*$|${var}=https://${NEW_HOST}|")
-done
-if [[ ${#sed_args[@]} -gt 0 ]]; then
-  TMP=$(mktemp)
-  sed -E "${sed_args[@]}" ./.env > "$TMP"
-  mv "$TMP" ./.env
+  STEP="rewrite host vars in .env"
+  sed_args=()
+  for var in "${ENV_HOST_VARS[@]}"; do
+    sed_args+=(-e "s|^${var}=.*$|${var}=${NEW_HOST}|")
+  done
+  for var in "${ENV_URL_VARS[@]}"; do
+    sed_args+=(-e "s|^${var}=.*$|${var}=https://${NEW_HOST}|")
+  done
+  if [[ ${#sed_args[@]} -gt 0 ]]; then
+    TMP=$(mktemp)
+    sed -E "${sed_args[@]}" ./.env > "$TMP"
+    mv "$TMP" ./.env
+  fi
+  echo "[worktree-provision] .env host vars repointed to ${NEW_HOST}"
 fi
-echo "[worktree-provision] .env host vars repointed to ${NEW_HOST}"
 
 STEP="copy .env.testing from source (optional)"
 if [[ -f "$SOURCE_ROOT/.env.testing" ]]; then
@@ -372,8 +453,10 @@ if [[ -f "$SOURCE_ROOT/.env.testing" ]]; then
   fi
 fi
 
-STEP="export-db from source project"
-(cd "$SOURCE_ROOT" && ddev export-db --gzip --file="$DUMP") >"$LOG" 2>&1
+if [[ -n "$HAS_DB" ]]; then
+  STEP="export-db from source project"
+  (cd "$SOURCE_ROOT" && ddev export-db --gzip --file="$DUMP") >"$LOG" 2>&1
+fi
 
 # First start with hooks skipped: a project's post-start hooks may need
 # dependencies (e.g. Drupal's `drush cache:rebuild`) or the database, and
@@ -381,6 +464,22 @@ STEP="export-db from source project"
 # in place, below.
 STEP="ddev start in worktree"
 ddev start -y --skip-hooks >"$LOG" 2>&1
+
+# Registration above should guarantee this, but the cost of being wrong is that
+# `composer install`, `import-db` and `restart` below all hit the source project
+# instead — so confirm DDEV really resolves to this worktree before running any
+# of them, rather than trusting it.
+STEP="verify DDEV resolves to the worktree"
+RESOLVED=$(ddev describe -j 2>/dev/null | grep -o '"approot":"[^"]*"' | head -n1 | cut -d'"' -f4)
+if [[ -n "$RESOLVED" && -d "$RESOLVED" ]]; then
+  RESOLVED=$(cd "$RESOLVED" && pwd -P)
+fi
+if [[ "$RESOLVED" != "$(pwd -P)" ]]; then
+  echo "[worktree-provision] DDEV resolves to '${RESOLVED:-unknown}', not this worktree." >&2
+  echo "[worktree-provision] refusing to continue — the remaining steps would run against that project." >&2
+  echo "[worktree-provision] register it by hand and rerun: (cd $TARGET && ddev config --project-name=$PROJECT)" >&2
+  exit 1
+fi
 
 # Install dependencies inside the container so the exact install paths declared
 # in composer.json / package.json are honoured — including framework-specific
@@ -416,8 +515,10 @@ if [[ -n "$JS_INSTALL" ]]; then
   fi
 fi
 
-STEP="ddev import-db in worktree"
-ddev import-db --file="$DUMP" >"$LOG" 2>&1
+if [[ -n "$HAS_DB" ]]; then
+  STEP="ddev import-db in worktree"
+  ddev import-db --file="$DUMP" >"$LOG" 2>&1
+fi
 
 # Now that dependencies and the database are present, restart so the project's
 # own post-start hooks run once, cleanly (e.g. pp-api creates db_testing;
