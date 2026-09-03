@@ -47,9 +47,10 @@ cd "$INVOKE_ROOT"
 # absent from a given .env are simply skipped.
 #
 # Override per project WITHOUT editing this ddev-generated file: create
-# .ddev/worktree.conf and set the arrays there, e.g.
+# .ddev/worktree.conf and set them there, e.g.
 #     ENV_HOST_VARS=(APP_DOMAIN COOKIE_DOMAIN)
 #     ENV_URL_VARS=(APP_URL VITE_APP_URL)
+#     WORKTREES_DIR=../myproject-worktrees   # read where TARGET is resolved
 ENV_HOST_VARS=(APP_DOMAIN SESSION_DOMAIN SANCTUM_STATEFUL_DOMAINS)  # set to <host>
 ENV_URL_VARS=(APP_URL)                                             # set to https://<host>
 [[ -f "$INVOKE_ROOT/.ddev/worktree.conf" ]] && source "$INVOKE_ROOT/.ddev/worktree.conf"
@@ -261,13 +262,22 @@ if [[ -z "$HAS_DB" && -z "$HAS_ENV" ]]; then
 fi
 
 # In --in-place mode the worktree already exists (the caller created it) and is our
-# cwd. Otherwise create/reuse .worktrees/<sanitized-branch> under the main
+# cwd. Otherwise create/reuse <worktrees-dir>/<sanitized-branch> under the main
 # checkout — the same convention worktree-remove tears down.
 SANITIZED=$(sanitize "$BRANCH")
 if [[ -n "$IN_PLACE" ]]; then
   TARGET="$INVOKE_ROOT"
 else
-  TARGET="$PRIMARY_ROOT/.worktrees/$SANITIZED"
+  # Read WORKTREES_DIR from the primary worktree's conf only, the same copy
+  # worktree-remove reads. A different value here would put the worktree in a
+  # directory removal never searches.
+  WORKTREES_ROOT=$(unset WORKTREES_DIR
+    source "$PRIMARY_ROOT/.ddev/worktree.conf" 2>/dev/null || :
+    printf '%s' "${WORKTREES_DIR:-.worktrees}")
+  WORKTREES_ROOT="${WORKTREES_ROOT/#\~\//$HOME/}"
+  [[ "$WORKTREES_ROOT" == /* ]] || WORKTREES_ROOT="$PRIMARY_ROOT/$WORKTREES_ROOT"
+  [[ -d "$WORKTREES_ROOT" ]] && WORKTREES_ROOT="$(cd "$WORKTREES_ROOT" && pwd)"
+  TARGET="${WORKTREES_ROOT%/}/$SANITIZED"
 fi
 
 if [[ "$SOURCE_ROOT" == "$TARGET" ]]; then
@@ -289,6 +299,7 @@ else
 fi
 
 cd "$TARGET"
+TARGET="$PWD"  # normalized, so no ../ shows up in the paths printed below
 
 if [[ -n "$HAS_ENV" && -e ./.env ]]; then
   echo "[worktree-provision] target already has a .env; remove it first if you want it reseeded" >&2
@@ -395,12 +406,13 @@ fi
 
 # Register the worktree as a DDEV project in its own right.
 #
-# `.worktrees/<branch>` always sits inside the source project's approot, and as
-# of DDEV v1.25.4 a *nested* project is ignored until it has been registered —
-# `ddev` acts on the enclosing project instead (ddev/ddev#8327). Bare
-# `ddev start` asks whether to use the nested project and `-y` answers no, so
-# without this every command below (composer install, import-db, restart) would
-# silently run against the SOURCE checkout.
+# The default `.worktrees/<branch>` sits inside the source project's approot,
+# and as of DDEV v1.25.4 a *nested* project is ignored until it has been
+# registered — `ddev` acts on the enclosing project instead (ddev/ddev#8327).
+# Bare `ddev start` asks whether to use the nested project and `-y` answers no,
+# so without this every command below (composer install, import-db, restart)
+# would silently run against the SOURCE checkout. Registering is harmless for a
+# WORKTREES_DIR outside the checkout, which isn't nested to begin with.
 #
 # `ddev config` is documented as the exception that acts on the directory it is
 # in, so it is what registers us. It also rewrites .ddev/config.yaml wholesale
