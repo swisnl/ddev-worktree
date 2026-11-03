@@ -28,6 +28,9 @@ post_install_actions:
         '# Which .env keys get repointed at the new worktree hostname:' \
         'ENV_HOST_VARS=(APP_DOMAIN SESSION_DOMAIN SANCTUM_STATEFUL_DOMAINS)  # -> <host>' \
         'ENV_URL_VARS=(APP_URL)                                             # -> https://<host>' \
+        '#' \
+        '# Where worktrees are created, relative to the main checkout (absolute and ~ work):' \
+        'WORKTREES_DIR=.worktrees' \
         > "$CONF"
       echo "ddev-worktree: wrote default .ddev/worktree.conf"
     else

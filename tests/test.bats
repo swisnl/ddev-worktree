@@ -155,6 +155,65 @@ teardown() {
   [ -z "$output" ]
 }
 
+@test "remove resolves the worktree in a custom WORKTREES_DIR" {
+  set -eu -o pipefail
+  cd "${TESTDIR}"
+
+  ddev add-on get "${DIR}"
+  echo 'WORKTREES_DIR=custom-wt' >> .ddev/worktree.conf
+
+  git init -q .
+  git -c user.email=t@example.com -c user.name=Test commit -q --allow-empty -m init
+  git worktree add custom-wt/spike -b spike >/dev/null
+
+  run ddev worktree-remove spike
+  [ "$status" -eq 0 ]
+  [ ! -d custom-wt/spike ]
+}
+
+@test "provision reads WORKTREES_DIR from the main checkout, not the invoking worktree" {
+  set -eu -o pipefail
+
+  # Stubbed ddev: enough for worktree-provision to resolve the target and add the
+  # worktree, which is all this test looks at. It then fails on a later call.
+  STUB="${TESTDIR}/stub"
+  mkdir -p "$STUB"
+  cat > "$STUB/ddev" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  describe) printf '{"status":"running"}\n' ;;
+  exec) case "$*" in *SITENAME*) printf 'base' ;; *TLD*) printf 'ddev.site' ;; esac ;;
+  *) exit 1 ;;
+esac
+EOF
+  chmod +x "$STUB/ddev"
+
+  REPO="${TESTDIR}/repo"
+  mkdir -p "$REPO/.ddev"
+  cd "$REPO"
+  git init -q .
+  printf '.env\n' > .gitignore
+  printf 'name: base\n' > .ddev/config.yaml
+  printf 'WORKTREES_DIR=main-dir\n' > .ddev/worktree.conf
+  git add -A
+  git -c user.email=t@example.com -c user.name=Test commit -q -m init
+  printf 'APP_URL=https://old\n' > .env
+
+  # a linked worktree whose own copy of the config disagrees
+  git worktree add linked -b linked >/dev/null
+  printf 'WORKTREES_DIR=linked-dir\n' > linked/.ddev/worktree.conf
+  printf 'APP_URL=https://old\n' > linked/.env
+
+  cd "$REPO/linked"
+  run env PATH="$STUB:$PATH" DDEV_APPROOT="$REPO/linked" \
+    bash "${DIR}/commands/host/worktree-provision" spike
+
+  # worktree-remove resolves the main checkout's value, so provision must too
+  [ -d "$REPO/main-dir/spike" ]
+  [ ! -d "$REPO/linked/linked-dir/spike" ]
+  [ ! -d "$REPO/linked-dir/spike" ]
+}
+
 @test "remove deletes the add-on files" {
   set -eu -o pipefail
   cd "${TESTDIR}"

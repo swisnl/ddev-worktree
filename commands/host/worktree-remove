@@ -70,8 +70,16 @@ if [[ -n "$IN_PLACE" ]]; then
   WORKTREE_PATH="$PWD"
 else
   # Sanitized to match the convention worktree-provision documents:
-  #   git worktree add .worktrees/<sanitized-branch> <branch>
-  WORKTREE_PATH="$MAIN_ROOT/.worktrees/$SANITIZED"
+  #   git worktree add <worktrees-dir>/<sanitized-branch> <branch>
+  # WORKTREES_DIR comes from the main checkout's conf only, resolved exactly as
+  # worktree-provision resolves it, so both commands agree on the path.
+  WORKTREES_ROOT=$(unset WORKTREES_DIR
+    source "$MAIN_ROOT/.ddev/worktree.conf" 2>/dev/null || :
+    printf '%s' "${WORKTREES_DIR:-.worktrees}")
+  WORKTREES_ROOT="${WORKTREES_ROOT/#\~\//$HOME/}"
+  [[ "$WORKTREES_ROOT" == /* ]] || WORKTREES_ROOT="$MAIN_ROOT/$WORKTREES_ROOT"
+  [[ -d "$WORKTREES_ROOT" ]] && WORKTREES_ROOT="$(cd "$WORKTREES_ROOT" && pwd)"
+  WORKTREE_PATH="${WORKTREES_ROOT%/}/$SANITIZED"
 fi
 
 # `ddev delete` drops the worktree's database irrecoverably, so tracked edits

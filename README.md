@@ -47,7 +47,8 @@ ddev worktree-remove my-feature --force   # also discard uncommitted edits to tr
 
 `worktree-provision <branch> [--from <ref|path>]`:
 
-1. creates `.worktrees/<branch>` under the main checkout (new or existing branch),
+1. creates `.worktrees/<branch>` under the main checkout (new or existing branch;
+   the directory is configurable, see Config),
 2. gives it its own DDEV project `‹source-name›-‹branch›` at its own hostname,
 3. copies `.env` from the source and repoints the host/URL vars (see Config),
 4. installs dependencies (`composer install`, plus `npm ci` / `yarn` / `pnpm` /
@@ -99,6 +100,29 @@ ENV_HOST_VARS=(APP_DOMAIN COOKIE_DOMAIN)
 ENV_URL_VARS=(APP_URL VITE_APP_URL)
 ```
 
+### Where worktrees are created
+
+`WORKTREES_DIR` sets the directory the worktrees go into, `.worktrees` under the
+main checkout by default:
+
+```bash
+# .ddev/worktree.conf
+WORKTREES_DIR=../myproject-worktrees   # or ~/worktrees/myproject
+```
+
+A relative path is taken from the main checkout, not from your current
+directory, so both commands land on the same place wherever you run them.
+Absolute paths and `~` work too, and git creates the directory if it's missing.
+Set this in the **main checkout's** `.ddev/worktree.conf` — that's the copy both
+commands read, so it still applies in a worktree that doesn't carry the file
+itself.
+
+A directory outside the main checkout keeps each worktree's `vendor/` and
+`node_modules/` out of the main project's sync scope, and out of tools that walk
+its tree. It also avoids the nested-project handling described under Notes. On
+macOS, pick a path Docker shares (`/Users`, `/Volumes`, `/private`, `/tmp` by
+default).
+
 ## Using with worktrunk (or another worktree manager)
 
 If you drive worktrees with [worktrunk](https://worktrunk.dev) (`wt`), let it own
@@ -149,13 +173,16 @@ Notes for this setup:
 
 ## Notes
 
-- Add `.worktrees/` and `.ddev/config.local.yaml` to the project's `.gitignore`.
+- Add the worktrees directory (`.worktrees/` by default) and
+  `.ddev/config.local.yaml` to the project's `.gitignore`. If `WORKTREES_DIR`
+  points outside the checkout, only the latter needs ignoring.
   A committed `.ddev/config.yaml` should **not** pin `name:` — the add-on writes
   the per-worktree name into `.ddev/config.local.yaml`.
 - Package managers other than npm must be available in the web container
   (usually via `corepack_enable: true` in `.ddev/config.yaml`, which every
   worktree inherits). If a tool is missing the JS step warns and continues.
-- `.worktrees/<branch>` sits inside the source project's approot, and since DDEV
+- The default `.worktrees/<branch>` sits inside the source project's approot
+  (a `WORKTREES_DIR` outside the checkout does not), and since DDEV
   v1.25.4 an unregistered *nested* project is passed over in favour of the one
   around it. Provisioning therefore registers the worktree with
   `ddev config --project-name=<name>` and puts `.ddev/config.yaml` back as it
